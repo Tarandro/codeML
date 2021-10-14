@@ -1,0 +1,78 @@
+import pytest
+import pandas as pd
+import numpy as np
+import random as rd
+from autonlp.autonlp import AutoNLP
+from autonlp.flags import Flags
+from autonlp.features.embeddings.tfidf import Tfidf
+
+
+class TestclassTfidf(object):
+    """
+    Test class Tfidf
+
+    Input :
+        flags : Instance of Flags class object
+        x (DataFrame) : train data with the column flags.column_text
+        x_test (DataFrame) : test data with the column flags.column_text
+        column_text (int) : index column of flags.column_text in data input
+        doc_spacy_data (array) : train data column_text preprocessed by a Spacy model
+        doc_spacy_data_test (array) : test data column_text preprocessed by a Spacy model
+        method_embedding (str) : name of the specific method to use for embedding
+    """
+
+    flags_dict_info = {
+        "column_text": "column_text",
+        "target": "target",
+        "outdir": "./logs_test",
+        "tfidf_wde_maxlen": 10,
+        "tfidf_wde_vector_size": 2
+    }
+    flags = Flags().update(flags_dict_info)
+
+    autonlp = AutoNLP(flags)
+
+    x = pd.DataFrame({flags.column_text: [
+        "text" + str(rd.randint(0, 5)) + " text" + str(rd.randint(0, 5)) + " text" + str(rd.randint(0, 5)) for i in
+        range(100)]})
+    x_test = pd.DataFrame({flags.column_text: [
+        "text" + str(rd.randint(0, 5)) + " text" + str(rd.randint(0, 5)) + " text" + str(rd.randint(0, 5)) for i in
+        range(30)]})
+
+    doc_spacy_data = None
+    doc_spacy_data_test = None
+    method_embedding = ('all', False)
+
+    column_text = 0
+
+    def test_doc_embedding(self):
+        dimension_embedding = "doc_embedding"
+
+        embedding = Tfidf(self.flags, self.column_text, dimension_embedding)
+
+        x_preprocessed = embedding.preprocessing_fit_transform(self.x, self.doc_spacy_data, self.method_embedding)
+        x_test_preprocessed = embedding.preprocessing_transform(self.x_test, self.doc_spacy_data_test)
+
+        assert len(x_preprocessed) == len(self.x)
+        assert len(x_test_preprocessed) == len(self.x_test)
+
+    def test_word_embedding(self):
+        dimension_embedding = "word_embedding"
+
+        embedding = Tfidf(self.flags, self.column_text, dimension_embedding)
+
+        x_token = embedding.preprocessing_fit_transform(self.x, self.doc_spacy_data, self.method_embedding)
+        x_test_token = embedding.preprocessing_transform(self.x_test, self.doc_spacy_data_test)
+
+        embedding_matrix = embedding.embedding_matrix
+        length_word_index = embedding.length_word_index
+        embed_size = embedding.embed_size
+
+        assert isinstance(x_token, dict)
+        assert isinstance(x_test_token, dict)
+
+        assert x_token["tok"].shape[1] <= self.flags.tfidf_wde_maxlen
+        assert x_test_token["tok"].shape[1] <= self.flags.tfidf_wde_maxlen
+
+        assert embedding_matrix.shape[0] == length_word_index + 1
+        assert embedding_matrix.shape[1] == embed_size

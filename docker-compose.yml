@@ -1,0 +1,21 @@
+version: '3'
+
+services:
+  backend:
+    build: .
+    ports:
+      - 5000:5000
+    volumes:
+      - ./storage:/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  frontend:
+    build: frontend
+    ports:
+      - 8501:8501
+    depends_on:
+      - backend
+    volumes:
+      - ./storage:/storage
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

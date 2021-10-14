@@ -1,0 +1,13 @@
+pandas==1.3.0
+numpy==1.19.2
+plotly==4.14.3
+matplotlib==3.3.2
+dataclasses==0.6
+scikit_learn==0.24.2
+streamlit==0.83.0
+wordcloud==1.8.1
+raceplotly==0.1.6
+textblob==0.15.3
+requests==2.25.1
+textblob_fr==0.2.0
+spacy==3.0.5
