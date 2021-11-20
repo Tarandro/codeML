@@ -6,11 +6,13 @@ from sklearn.model_selection import KFold, StratifiedKFold
 from joblib import dump, load
 import random as rd
 import os
+import time
 
 from tensorflow.keras import backend as K
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, ModelCheckpoint
 from .utils.metrics import roc, calcul_metric_binary, calcul_metric_classification, calcul_metric_regression
 from .utils.class_weight import compute_dict_class_weight
+from .utils.ts_preprocessing import build_lag_features_transform, build_rolling_features_transform
 
 import logging
 from .utils.logging import get_logger, verbosity_to_loglevel
@@ -22,7 +24,9 @@ class Validation:
     """ Class validation/cross-validation """
 
     def __init__(self, objective, seed=15, is_NN=False, name_embedding=None, name_model_full=None, class_weight=None,
-                 average_scoring="weighted", apply_mlflow=False, experiment_name="Experiment", apply_logs=True):
+                 average_scoring="weighted", apply_mlflow=False, experiment_name="Experiment", apply_logs=True,
+                 apply_autonlp=False, size_train=10, time_series_recursive=False, time_series_features=None,
+                 scaler_info=None):
         """
         Args:
             objective (str) : 'binary' or 'multi-class' or 'regression'
@@ -49,6 +53,11 @@ class Validation:
         self.apply_logs = apply_logs
         self.oof_val = None
         self.fold_id = None
+        self.apply_autonlp = apply_autonlp
+        self.size_train = size_train
+        self.time_series_recursive = time_series_recursive
+        self.time_series_features = time_series_features
+        self.scaler_info = scaler_info
 
     def fit(self, model, x, y, folds, x_valid=None, y_valid=None, cv_strategy="StratifiedKFold",
             scoring='accuracy', outdir='./', params_all=dict(), batch_size=16, patience=4, epochs=60, min_lr=1e-4):
@@ -72,17 +81,23 @@ class Validation:
         """
 
         if x_valid is None:
-            self.fold_id = np.ones((len(y),)) * -1
+            length_data = 0
+            for n, (tr, te) in enumerate(folds):
+                length_data += len(te)
+            self.fold_id = np.ones((length_data,)) * -1
         else:
             self.fold_id = np.ones((len(y_valid),)) * -1
 
         if self.apply_logs:
             outdir_embedding = os.path.join(outdir, 'last_logs', self.name_embedding)
             os.makedirs(outdir_embedding, exist_ok=True)
-            if self.name_embedding.lower() == "transformer":
-                outdir_model = os.path.join(outdir_embedding, self.name_model_full)
+            if self.apply_autonlp:
+                if self.name_embedding.lower() == "transformer":
+                    outdir_model = os.path.join(outdir_embedding, self.name_model_full)
+                else:
+                    outdir_model = os.path.join(outdir_embedding, self.name_model_full.split('+')[1])
             else:
-                outdir_model = os.path.join(outdir_embedding, self.name_model_full.split('+')[1])
+                outdir_model = os.path.join(outdir_embedding, self.name_model_full)
             os.makedirs(outdir_model, exist_ok=True)
 
         if self.apply_mlflow:
@@ -130,24 +145,16 @@ class Validation:
                         y_train, y_val = y, y_valid
             else:
                 # cross-validation
-                if isinstance(x, dict):
-                    x_train, x_val = {}, {}
-                    for col in x.keys():
-                        x_train[col], x_val[col] = x[col][train_index], x[col][val_index]
-                elif isinstance(x, list):
-                    x_train, x_val = [], []
-                    for col in range(len(x)):
-                        x_train.append(x[col][train_index])
-                        x_val.append(x[col][val_index])
-                else:
-                    if isinstance(x, pd.DataFrame):
-                        x_train, x_val = x.values[train_index], x.values[val_index]
-                    else:
-                        x_train, x_val = x[train_index], x[val_index]
-                if isinstance(y, pd.DataFrame):
-                    y_train, y_val = y.values[train_index], y.values[val_index]
-                else:
-                    y_train, y_val = y[train_index], y[val_index]
+                x_train = x[num_fold][0]
+                x_val = x[num_fold][1]
+                y_train = y[num_fold][0]
+                y_val = y[num_fold][1]
+
+                # cross-validation
+                if isinstance(x_train, pd.DataFrame):
+                    x_train, x_val = x_train.values, x_val.values
+                if isinstance(y_train, pd.DataFrame):
+                    y_train, y_val = y_train.values, y_val.values
 
             if self.is_NN:
                 K.clear_session()
@@ -214,8 +221,84 @@ class Validation:
                                                                                        -(p + 1)]))
                 total_epochs += len(train_history.history[monitor][:-(p + 1)])
 
-                pred_train = model_nn.predict(x_train)
-                pred_val = model_nn.predict(x_val)
+                if "time_series" in self.objective and 'lstm' in self.name_model_full.lower() and self.time_series_recursive:  # use predicted time series for next prediction
+                    pred_train = None
+
+                    prediction_steps = x_val['inp'].shape[0]
+                    timesteps = x_val['inp'].shape[1]
+                    x_shape2 = x_val['inp'].shape[2]
+                    y_shape2 = y_val.shape[1]
+
+                    x_preprocessed = {}
+                    for col in x_val.keys():
+                        x_preprocessed[col] = np.array([x_val[col][0]])
+
+                    predictions = []
+                    for j in range(timesteps, timesteps + prediction_steps):
+                        predicted_stock_price = model_nn.predict(x_preprocessed)
+
+                        inp = np.append(x_preprocessed['inp'], predicted_stock_price).reshape(1, timesteps + 1,
+                                                                                              x_shape2)
+
+                        x_preprocessed = {'inp': inp[0, -timesteps:].reshape(1, timesteps, x_shape2)}
+                        for col in x.keys():
+                            if col != 'inp':
+                                x_preprocessed[col] = np.array([x[col][j - timesteps]])
+
+                        # pred = scaler_ts.inverse_transform(predicted_stock_price.reshape(1,-1))
+                        pred = predicted_stock_price.reshape(1, -1)
+                        predictions.append(pred)
+                    pred_val = np.array(predictions).reshape(prediction_steps, y_shape2)
+
+                elif "time_series" in self.objective and "dense_network" in self.name_model_full.lower() and self.time_series_recursive:
+                    pred_train = None
+
+                    # lag_features and rolling features day after day
+                    step_lags, step_rolling, win_type, position_id, position_date = self.time_series_features
+
+                    max_feat = np.max(step_lags + step_rolling) + 1
+                    date_for_train = list(x['inp'].iloc[train_index][position_date].unique()[-max_feat:])
+                    data_test = x['inp'].iloc[train_index][x['inp'][position_date].isin(date_for_train)].copy()
+                    y_test = y[y.index.isin(list(data_test.index))].copy()
+                    start = time.perf_counter()
+                    if position_id is None:
+                        pass
+                    else:
+                        if isinstance(position_id, str):
+                            pass
+                        else:
+                            position_id = pd.concat(
+                                [position_id[position_id.index.isin(list(data_test.index))], position_id.iloc[train_index]],
+                                axis=0, ignore_index=True)
+
+                    pred_val = np.zeros(y_val.shape)
+                    index = 0
+                    for date in x['inp'].iloc[train_index][position_date].unique():
+                        x_val_inp = x['inp'].iloc[train_index][x['inp'][position_date].isin([date])].copy()
+                        data_test = pd.concat([data_test, x_val_inp], axis=0, ignore_index=True)
+                        data_test[self.scaler_info[1]] = self.scaler_info[0].inverse_transform(
+                            data_test[self.scaler_info[1]])
+
+                        data_test = build_lag_features_transform(data_test, pd.concat(
+                            [y_test, pd.DataFrame(pred_val[:len(data_test) - len(y_test)], columns=y_test.columns)],
+                            axis=0, ignore_index=True),
+                                                                 step_lags, position_id)
+                        data_test = build_rolling_features_transform(data_test, pd.concat(
+                            [y_test, pd.DataFrame(pred_val[:len(data_test) - len(y_test)], columns=y_test.columns)],
+                            axis=0, ignore_index=True),
+                                                                     step_rolling, win_type, position_id)
+                        data_test[self.scaler_info[1]] = self.scaler_info[0].transform(data_test[self.scaler_info[1]])
+
+                        x_preprocessed = {'inp': data_test[-len(x_val_inp):].values}
+                        for col in x_val.keys():
+                            if col != 'inp':
+                                x_preprocessed[col] = x_val[col][index:(index + len(x_val_inp))]
+                        pred_val[index:(index + len(x_val_inp))] = model_nn.predict(x_preprocessed)
+                        index += len(x_val_inp)
+                    print('Time prediction_val :', time.perf_counter() - start)
+                else:
+                    pred_train = model_nn.predict(x_train)
+                    pred_val = model_nn.predict(x_val)
 
             else:
                 model_skl = model()
@@ -227,44 +310,118 @@ class Validation:
                 if self.apply_logs:
                     dump(model_skl, '{}/fold{}.joblib'.format(outdir_model, num_fold))
 
-                if 'regression' in self.objective:
-                    pred_train = model_skl.predict(x_train)
-                    pred_val = model_skl.predict(x_val)
+                if 'time_series' in self.objective and self.time_series_recursive:
+                    pred_train = None
+
+                    # lag_features and rolling features day after day
+                    step_lags, step_rolling, win_type, position_id, position_date = self.time_series_features
+
+                    max_feat = np.max(step_lags + step_rolling) + 1
+                    date_for_train = list(x.iloc[train_index][position_date].unique()[-max_feat:])
+                    data_test = x.iloc[train_index][x[position_date].isin(date_for_train)].copy()
+                    y_test = y[y.index.isin(list(data_test.index))].copy()
+                    start = time.perf_counter()
+
+                    if position_id is None:
+                        pass
+                    else:
+                        if isinstance(position_id, str):
+                            pass
+                        else:
+                            position_id = pd.concat(
+                                [position_id[position_id.index.isin(list(data_test.index))], position_id.iloc[train_index]],
+                                axis=0, ignore_index=True)
+
+                    if y_val.shape[1] == 1:
+                        pred_val = np.zeros(y_val.shape[0])
+                    else:
+                        pred_val = np.zeros(y_val.shape)
+                    index = 0
+                    for date in x.iloc[train_index][position_date].unique():
+                        x_val = x.iloc[train_index][x[position_date].isin([date])].copy()
+                        data_test = pd.concat([data_test, x_val], axis=0, ignore_index=True)
+                        data_test[self.scaler_info[1]] = self.scaler_info[0].inverse_transform(
+                            data_test[self.scaler_info[1]])
+
+                        data_test = build_lag_features_transform(data_test, pd.concat(
+                            [y_test, pd.DataFrame(pred_val[:len(data_test) - len(y_test)], columns=y_test.columns)],
+                            axis=0, ignore_index=True),
+                                                                 step_lags, position_id)
+                        data_test = build_rolling_features_transform(data_test, pd.concat(
+                            [y_test, pd.DataFrame(pred_val[:len(data_test) - len(y_test)], columns=y_test.columns)],
+                            axis=0, ignore_index=True),
+                                                                     step_rolling, win_type, position_id)
+                        data_test[self.scaler_info[1]] = self.scaler_info[0].transform(data_test[self.scaler_info[1]])
+
+                        if 'regression' in self.objective:
+                            pred_val[index:(index + len(x_val))] = model_skl.predict(data_test[-len(x_val):].values)
+                        else:
+                            pred_val[index:(index + len(x_val))] = model_skl.predict_proba(data_test[-len(x_val):].values)
+                        index += len(x_val)
+                    print('Time prediction_val :', time.perf_counter() - start)
+                    del data_test, y_test
                 else:
-                    pred_train = model_skl.predict_proba(x_train)
-                    pred_val = model_skl.predict_proba(x_val)
+                    if 'regression' in self.objective:
+                        pred_train = model_skl.predict(x_train)
+                        pred_val = model_skl.predict(x_val)
+                    else:
+                        pred_train = model_skl.predict_proba(x_train)
+                        pred_val = model_skl.predict_proba(x_val)
+
+
 
             if first_fold:
                 first_fold = False
-                if 'binary' in self.objective or ('regression' in self.objective and y.shape[1] == 1):
+                if 'binary' in self.objective or ('regression' in self.objective and y_train.shape[1] == 1):
                     if train_index == 'all':
                         self.oof_val = np.zeros((y_val.shape[0],))
                     else:
-                        self.oof_val = np.zeros((y.shape[0],))
+                        if isinstance(y, list):
+                            length_data = 0
+                            for n, (tr, te) in enumerate(folds):
+                                length_data += len(te)
+                            self.oof_val = np.zeros((length_data,))
+                        else:
+                            self.oof_val = np.zeros((y.shape[0],))
                 else:
                     if train_index == 'all':
                         self.oof_val = np.zeros((y_val.shape[0], pred_val.shape[1]))
                     else:
-                        self.oof_val = np.zeros((y.shape[0], pred_val.shape[1]))
+                        if isinstance(y, list):
+                            length_data = 0
+                            for n, (tr, te) in enumerate(folds):
+                                length_data += len(te)
+                            self.oof_val = np.zeros((length_data,pred_val.shape[1]))
+                        else:
+                            self.oof_val = np.zeros((y.shape[0],pred_val.shape[1]))
+                self.y_all = np.zeros((self.oof_val.shape[0], y_val.shape[1]))
+
+            self.y_all[val_index, :] = y_val
 
             if self.is_NN:
-                if 'binary' in self.objective or ('regression' in self.objective and y.shape[1] == 1):
-                    pred_train = pred_train.reshape(-1)
+                if 'binary' in self.objective or ('regression' in self.objective and y_train.shape[1] == 1):
+                    if pred_train is not None:
+                        pred_train = pred_train.reshape(-1)
                     pred_val = pred_val.reshape(-1)
             else:
                 if 'binary' in self.objective:
-                    pred_train = pred_train[:, 1].reshape(x_train.shape[0], )
+                    if pred_train is not None:
+                        pred_train = pred_train[:, 1].reshape(x_train.shape[0], )
                     pred_val = pred_val[:, 1].reshape(x_val.shape[0], )
-                elif 'regression' in self.objective and y.shape[1] == 1:
-                    pred_train = pred_train.reshape(x_train.shape[0], )
+                elif 'regression' in self.objective and y_train.shape[1] == 1:
+                    if pred_train is not None:
+                        pred_train = pred_train.reshape(x_train.shape[0], )
                     pred_val = pred_val.reshape(x_val.shape[0], )
             self.oof_val[val_index] = pred_val
             self.fold_id[val_index] = num_fold
 
             # log_metrics for Train set :
             if 'binary' in self.objective:
-                m_binary, roc_binary = self.get_metrics(y_train, pred_train, False)
-                acc_train, f1_train, recall_train, pre_train, roc_auc_train = m_binary
+                if pred_train is not None:
+                    m_binary, roc_binary = self.get_metrics(y_train, pred_train, False)
+                    acc_train, f1_train, recall_train, pre_train, roc_auc_train = m_binary
+                else:
+                    acc_train, f1_train, recall_train, pre_train, roc_auc_train = 0,0,0,0,0
                 m_binary, roc_binary = self.get_metrics(y_val, pred_val, False)
                 acc_val, f1_val, recall_val, pre_val, roc_auc_val = m_binary
                 metrics_train = {"acc_train": acc_train, "f1_train": f1_train, "recall_train": recall_train,
@@ -272,13 +429,19 @@ class Validation:
                 metrics = {"acc_val": acc_val, "f1_val": f1_val, "recall_val": recall_val, "pre_val": pre_val,
                            "roc_auc_val": roc_auc_val}
             elif 'multi-class' in self.objective:
-                acc_train, f1_train, recall_train, pre_train = self.get_metrics(y_train, pred_train, False)
+                if pred_train is not None:
+                    acc_train, f1_train, recall_train, pre_train = self.get_metrics(y_train, pred_train, False)
+                else:
+                    acc_train, f1_train, recall_train, pre_train = 0,0,0,0
                 acc_val, f1_val, recall_val, pre_val = self.get_metrics(y_val, pred_val, False)
                 metrics_train = {"acc_train": acc_train, "f1_train": f1_train, "recall_train": recall_train,
                                  "pre_train": pre_train}
                 metrics = {"acc_val": acc_val, "f1_val": f1_val, "recall_val": recall_val, "pre_val": pre_val}
             elif 'regression' in self.objective:
-                mse_train, rmse_train, expl_var_train, r2_train = self.get_metrics(y_train, pred_train, False)
+                if pred_train is not None:
+                    mse_train, rmse_train, expl_var_train, r2_train = self.get_metrics(y_train, pred_train, False)
+                else:
+                    mse_train, rmse_train, expl_var_train, r2_train = 0,0,0,0
                 mse_val, rmse_val, expl_var_val, r2_val = self.get_metrics(y_val, pred_val, False)
                 metrics_train = {"mse_train": mse_train, "rmse_train": rmse_train, "expl_var_train": expl_var_train,
                                  "r2_train": r2_train}
@@ -314,14 +477,14 @@ class Validation:
         if isinstance(y, pd.DataFrame):
             if x_valid is None:
                 # cross-validation
-                y_true_sample = y.values[np.where(self.fold_id >= 0)[0]].copy()
+                y_true_sample = self.y_all.values[np.where(self.fold_id >= 0)[0]].copy()
             else:
                 # validation
                 y_true_sample = y_valid.values[np.where(self.fold_id >= 0)[0]].copy()
         else:
             if x_valid is None:
                 # cross-validation
-                y_true_sample = y[np.where(self.fold_id >= 0)[0]].copy()
+                y_true_sample = self.y_all[np.where(self.fold_id >= 0)[0]].copy()
             else:
                 # validation
                 y_true_sample = y_valid[np.where(self.fold_id >= 0)[0]].copy()

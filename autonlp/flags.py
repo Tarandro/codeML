@@ -36,7 +36,46 @@ class Flags:
     # name of target column
     target: str = 'target'
 
-    ### Preprocessing
+    ### Preprocessing ML
+    columns_to_remove: list = field(default_factory=list)
+    ordinal_features: list = field(default_factory=list)
+    normalize: bool = True
+    method_scaling: str = 'MinMaxScaler'  # 'MinMaxScaler', 'RobustScaler', 'StandardScaler'
+    type_columns: dict = field(default_factory=lambda: None)
+    apply_preprocessing_mandatory: bool = True
+    remove_categorical: bool = False
+
+    method_nan_categorical: str = 'constant'
+    method_nan_numeric: str = 'mean'
+    subsample: float = 1
+    feature_interaction: bool = False
+    feature_ratio: bool = False
+    polynomial_features: bool = False
+    remove_multicollinearity: bool = False
+    multicollinearity_threshold: float = 0.9
+    feature_selection: bool = False
+    feature_selection_threshold: float = 0.8
+    bin_numeric_features: list = field(default_factory=list)
+    remove_low_variance: bool = False
+    remove_percentage: float = 0.8
+    info_pca: dict = field(default_factory=dict)
+    info_tsne: dict = field(default_factory=dict)
+    info_stats: dict = field(default_factory=dict)
+
+    ### Preprocessing Time-Series
+    startDate_train: str = 'all'  # or int  need to be a continuous numeric column
+    endDate_train: str = 'all'  # or int
+    timesteps: int = 5
+    position_id: str = field(default_factory=lambda: None)  # can be a dataframe
+    position_date: str = field(default_factory=lambda: None)  # need to be a continuous numeric column
+    size_train_prc: float = 0.8
+    time_series_recursive: bool = False
+    LSTM_date_features: list = field(default_factory=list)
+    step_lags: list = field(default_factory=list)
+    step_rolling: list = field(default_factory=list)
+    win_type: str = field(default_factory=lambda: None)
+
+    ### Preprocessing NLP
     # can apply a small cleaning on text column:
     apply_small_clean: bool = True
     # name of spacy model for preprocessing (fr:"fr_core_news_md", en:"en_core_web_md")
@@ -49,6 +88,10 @@ class Flags:
     ### AutoNLP
     # specify target objective : 'binary' / 'multi-class' / 'regression'
     objective: str = 'multi-class'
+    # list of name ML models to include :
+    classifier_ml: dict = field(
+        default_factory=lambda: {'logistic_regression':1, 'randomforest': None, 'lightgbm': None,
+                                 'xgboost': None, 'catboost': None, 'dense_network': None, 'lstm': None})
     # list of name models to include :
     embedding: dict = field(
         default_factory=lambda: {"tf": 1, "tf-idf": None, "word2vec": 2, "fasttext": None, "doc2vec": None,
@@ -286,6 +329,26 @@ class Flags:
     sgdr_penalty: list = field(default_factory=lambda: ['l2', 'l1'])
     sgdr_loss: list = field(default_factory=lambda: ['squared_loss', 'huber', 'epsilon_insensitive'])
 
+    # Random Forest Classifier or Regressor
+    rf_n_estimators_min: int = 20
+    rf_n_estimators_max: int = 100
+    rf_max_depth_min: int = 5
+    rf_max_depth_max: int = 75
+    rf_min_samples_split_min: int = 5
+    rf_min_samples_split_max: int = 15
+    rf_max_samples_min: float = 0.5
+    rf_max_samples_max: float = 1
+
+    # LightBGM Classifier or Regressor
+    lgbm_n_estimators_min: int = 20
+    lgbm_n_estimators_max: int = 200
+    lgbm_num_leaves_min: int = 5
+    lgbm_num_leaves_max: int = 150
+    lgbm_learning_rate_min: float = 0.03
+    lgbm_learning_rate_max: float = 0.3
+    lgbm_bagging_fraction_min: float = 0.5
+    lgbm_bagging_fraction_max: float = 1
+
     # XGBoost
     xgb_n_estimators_min: int = 20
     xgb_n_estimators_max: int = 200
@@ -296,7 +359,40 @@ class Flags:
     xgb_subsample_min: float = 0.5
     xgb_subsample_max: float = 1.0
 
+    # CatBoost
+    cat_iterations_min: int = 20
+    cat_iterations_max: int = 200
+    cat_depth_min: int = 2
+    cat_depth_max: int = 9
+    cat_learning_rate_min: float = 0.04
+    cat_learning_rate_max: float = 0.3
+    cat_subsample_min: float = 0.5
+    cat_subsample_max: float = 1
+
     ### Classifier Neural Network
+
+    # Dense Neural Network
+    dnn_hidden_unit_1_min: int = 60
+    dnn_hidden_unit_1_max: int = 120
+    dnn_hidden_unit_2_min: int = 60
+    dnn_hidden_unit_2_max: int = 120
+    dnn_hidden_unit_3_min: int = 60
+    dnn_hidden_unit_3_max: int = 120
+    dnn_learning_rate: list = field(default_factory=lambda: [1e-2, 1e-3])
+    dnn_dropout_rate_min: float = 0.0
+    dnn_dropout_rate_max: float = 0.5
+
+    # LSTM
+    lstm_hidden_unit_1_min: int = 60
+    lstm_hidden_unit_1_max: int = 120
+    lstm_hidden_unit_2_min: int = 60
+    lstm_hidden_unit_2_max: int = 120
+    lstm_hidden_unit_3_min: int = 60
+    lstm_hidden_unit_3_max: int = 120
+    lstm_learning_rate: list = field(default_factory=lambda: [1e-2, 1e-3])
+    lstm_dropout_rate_min: float = 0.0
+    lstm_dropout_rate_max: float = 0.5
+
     # GlobalAverage
     ga_dropout_rate_min: float = 0
     ga_dropout_rate_max: float = 0.5
@@ -310,8 +406,6 @@ class Flags:
     # LSTM
     lstm_hidden_unit_min: int = 120
     lstm_hidden_unit_max: int = 130
-    lstm_dropout_rate_min: float = 0
-    lstm_dropout_rate_max: float = 0.5
 
     # GRU
     gru_hidden_unit_min: int = 120

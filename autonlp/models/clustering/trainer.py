@@ -18,7 +18,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from ...models.embeddings.trainer import Embedding
 from ...utils.metrics import calcul_metric_classification
 from ...utils.utils_clustering import clustering_similarity_voc, df_word_cluster, topic_terms_cluster
-from ...features.cleaner import reduce_text_data
+from ...utils.nlp_preprocessing import reduce_text_data
 
 import logging
 from ...utils.logging import get_logger

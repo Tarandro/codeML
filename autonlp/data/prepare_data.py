@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
 import random as rd
+import os
 from sklearn.model_selection import KFold, StratifiedKFold
+from joblib import load, dump
+from sklearn.preprocessing import MinMaxScaler, RobustScaler, StandardScaler
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,6 +32,8 @@ class Prepare:
             nfolds_train (int) number of folds to train during optimization/validation
             cv_strategy ("StratifiedKFold" or "KFold")
         """
+        self.outdir = flags_parameters.outdir
+        self.objective = flags_parameters.objective
         self.column_text = flags_parameters.column_text
         self.frac_trainset = flags_parameters.frac_trainset
         self.map_label = flags_parameters.map_label
@@ -37,6 +42,18 @@ class Prepare:
         self.nfolds = flags_parameters.nfolds
         self.nfolds_train = flags_parameters.nfolds_train
         self.cv_strategy = flags_parameters.cv_strategy
+
+        self.method_scaling = flags_parameters.method_scaling
+        self.ordinal_features = flags_parameters.ordinal_features
+        self.normalize = flags_parameters.normalize
+
+        self.position_id = flags_parameters.position_id
+        self.position_date = flags_parameters.position_date
+        self.size_train_prc = flags_parameters.size_train_prc
+        self.time_series_recursive = flags_parameters.time_series_recursive
+        self.LSTM_date_features = flags_parameters.LSTM_date_features
+        self.startDate_train = flags_parameters.startDate_train
+        self.endDate_train = flags_parameters.endDate_train
 
         # self.target need to be a List
         self.target = flags_parameters.target
@@ -72,11 +89,16 @@ class Prepare:
         else:
             Y = None
 
-        # for X, keep only the column 'self.column_text'
-        # WARNING : self.column_text (int) is now the column number of self.column_text (str) in self.data
-        column_text = list(data[[self.column_text]].columns).index(self.column_text)
+        if self.column_text is not None or self.column_text in data.columns:
+            # for X, keep only the column 'self.column_text'
+            # WARNING : self.column_text (int) is now the column number of self.column_text (str) in self.data
+            column_text = list(data[[self.column_text]].columns).index(self.column_text)
+            data = data[[self.column_text]]
 
-        return data[[self.column_text]], Y, column_text
+        else:
+            column_text = None
+
+        return data, Y, column_text
 
     def split_data(self, data, Y, frac_trainset):
         """ split data, Y -> X_train, X_test, Y_train, Y_test
@@ -119,6 +141,156 @@ class Prepare:
             logger.info("Test set size : 0")
 
         return X_train, Y_train, X_test, Y_test
+
+    def split_data_ts(self, data, Y, startDate_train, endDate_train):
+        """ split data, Y -> X_train, X_test, Y_train, Y_test
+        Args:
+            data (DataFrame) data with the column_text
+            Y (DataFrame) data with target columns
+            frac_trainset (float) fraction for training set
+        Return:
+            X_train (DataFrame) train data with column text
+            Y_train (DataFrame) train data with target columns
+            X_test (DataFrame) test data with column text
+            Y_test (DataFrame) test data with target columns
+        """
+        # DEBUG
+        if self.debug:
+            logger.info("\n DEBUG MODE : only a small dataset portion is used")
+            data = data.sample(n=min(50, len(data)), random_state=self.seed)
+
+        # Position ID for time_series objective
+        if self.position_id is not None and self.position_id in data.columns and isinstance(self.position_id, str):
+            position_id = data[[self.position_id]]
+        else:
+            position_id = self.position_id
+
+        if data.shape[1] == 0:  # can't do tabular prediction (case if only column text)
+            if startDate_train == 'all' and endDate_train == 'all':
+                Y_train = Y.copy()
+            elif startDate_train == 'all':
+                Y_train = Y.loc[:endDate_train, :].copy()
+            elif endDate_train == 'all':
+                Y_train = Y.loc[startDate_train:, :].copy()
+            else:
+                Y_train = Y.loc[startDate_train:endDate_train, :].copy()
+            if endDate_train != 'all' and endDate_train != Y.index[-1]:
+                Y_test = Y.loc[endDate_train:, :].copy()
+                if position_id is not None:
+                    position_id_test = position_id[position_id.index.isin(list(Y_test.index))]
+                else:
+                    position_id_test = None
+            else:
+                Y_test = None
+                position_id_test = None
+
+            if position_id is not None:
+                position_id_train = position_id[position_id.index.isin(list(Y_train.index))]
+            else:
+                position_id_train = None
+            X_train = None
+            X_test = None
+
+        else:
+            if startDate_train == 'all' and endDate_train == 'all':
+                X_train = data
+            elif startDate_train == 'all':
+                X_train = data[data[self.position_date] <= endDate_train]
+            elif endDate_train == 'all':
+                X_train = data[data[self.position_date] >= startDate_train]
+            else:
+                X_train = data[(data[self.position_date] >= startDate_train) & (data[self.position_date] <= endDate_train)]
+
+            if position_id is not None:
+                position_id_train = position_id[position_id.index.isin(list(X_train.index))]
+            else:
+                position_id_train = None
+
+            if endDate_train != 'all' and endDate_train != np.max(data[self.position_date]):
+                X_test = data[data[self.position_date] > endDate_train]
+                if position_id is not None:
+                    position_id_test = position_id[position_id.index.isin(list(X_test.index))]
+                else:
+                    position_id_test = None
+            else:
+                X_test = None
+                position_id_test = None
+
+            # del self.data
+
+            Y_train = Y.loc[X_train.index, :]
+            try:
+                Y_test = Y.loc[X_test.index, :]
+            except:
+                Y_test = None
+                pass
+
+        return X_train, Y_train, X_test, Y_test, position_id_train, position_id_test
+
+    def fit_transform_normalize_data(self, X_train):
+        self.features = X_train.columns.values
+
+        if self.method_scaling == 'MinMaxScaler':
+            self.scaler = MinMaxScaler(feature_range=(0, 1), copy=False)  # or (-1,1)
+        elif self.method_scaling == 'RobustScaler':
+            self.scaler = RobustScaler(copy=False)
+        else:
+            self.scaler = StandardScaler(copy=False)
+
+        self.column_to_normalize = [col for col in self.features if
+                                    col not in self.ordinal_features + [self.column_text]]  # from pre because int
+
+        if len(self.column_to_normalize) > 0:
+            self.scaler.fit(X_train[self.column_to_normalize])
+
+            dump(self.scaler, os.path.join(self.outdir, "scaler.pkl"))
+            self.scaler_info = [self.scaler, self.column_to_normalize].copy()
+
+            #for col in self.column_to_normalize:
+            #    self.scaler.fit(self.X_train[[col]])
+            #    a = self.X_train[[col]].values
+            #    self.X_train[[col]] = self.scaler.transform(a)
+            #    del a
+            #    try:
+            #        a = self.X_test[[col]].values
+            #        self.X_test[[col]] = self.scaler.transform(a)
+            #        del a
+            #    except:
+            #        pass
+
+            ### take a lot of memory to do it all together !
+            X_train[self.column_to_normalize] = self.scaler.transform(X_train[self.column_to_normalize].values)
+            #try:
+            #    X_val[self.column_to_normalize] = self.scaler.transform(X_val[self.column_to_normalize].values)
+            #except:
+            #    pass
+            #try:
+            #    X_test[self.column_to_normalize] = self.scaler.transform(X_test[self.column_to_normalize].values)
+            #except:
+            #    pass
+        else:
+            self.scaler_info = None
+
+        return X_train
+
+    def transform_normalize_data(self, X):
+        self.features = X.columns.values
+
+        self.column_to_normalize = [col for col in self.features if
+                                    col not in self.ordinal_features + [self.column_text]]  # from pre because int
+
+        if len(self.column_to_normalize) > 0:
+            try:
+                scaler = self.scaler
+            except:
+                scaler = load(os.path.join(self.outdir, "scaler.pkl"))
+            self.scaler_info = [scaler, self.column_to_normalize].copy()
+
+            ### take a lot of memory to do it all together !
+            X[self.column_to_normalize] = scaler.transform(X[self.column_to_normalize].values)
+        else:
+            self.scaler_info = None
+        return X
 
     def create_validation(self, dataset_val):
         """ separate column text and target -> X and Y
@@ -191,15 +363,81 @@ class Prepare:
         data, Y, column_text = self.separate_X_Y(data)
 
         if dataset_val is None:
-            X_train, Y_train, X_test, Y_test = self.split_data(data, Y, self.frac_trainset)
+            if 'time_series' in self.objective:
+                X_tr, Y_tr, X_test, Y_test, position_id_train, position_id_test = self.split_data_ts(data, Y,
+                                                                      self.startDate_train, self.endDate_train)
+            else:
+                X_tr, Y_tr, X_test, Y_test = self.split_data(data, Y, self.frac_trainset)
+                position_id_train, position_id_test = None, None
+
+            self.ordinal_features = [col for col in self.ordinal_features if col in X_tr.columns]
+            self.LSTM_date_features = [col for col in self.LSTM_date_features if col in X_tr.columns]
+            self.len_unique_value = {}
+            for col in list(set(self.ordinal_features + self.LSTM_date_features)):
+                self.len_unique_value[col] = len(data[col].unique())
+
             X_val, Y_val = None, None
-            folds = self.create_cross_validation(X_train, Y_train)
+            folds = self.create_cross_validation(X_tr, Y_tr)
+
+            X_train, Y_train = [], []
+            for n, (tr, te) in enumerate(folds):
+                if X_tr is not None:
+                    x_tr, x_val = X_tr.iloc[tr, :], X_tr.iloc[te, :]
+                    X_train.append([x_tr, x_val])
+                if Y_tr is not None:
+                    y_tr, y_val = Y_tr.iloc[tr, :], Y_tr.iloc[te, :]
+                    Y_train.append([y_tr, y_val])
+
+            if len(X_train) == 0:
+                X_train = None
+            if len(Y_train) == 0:
+                Y_train = None
+
         else:
             # if a validation dataset is provided, data is not split in train/test and validation data will
             # also be the test set -> frac_trainset = 1
-            frac_trainset = 1
-            X_train, Y_train, X_test, Y_test = self.split_data(data, Y, frac_trainset)
+
+            if 'time_series' in self.objective:
+                self.startDate_train, self.endDate_train = "all", "all"
+                X_train, Y_train, X_test, Y_test, position_id_train, position_id_test = self.split_data_ts(data, Y,
+                                                                      self.startDate_train, self.endDate_train)
+            else:
+                frac_trainset = 1
+                X_train, Y_train, X_test, Y_test = self.split_data(data, Y, frac_trainset)
+                position_id_train, position_id_test = None, None
+
+            self.ordinal_features = [col for col in self.ordinal_features if col in X_train.columns]
+            self.LSTM_date_features = [col for col in self.LSTM_date_features if col in X_train.columns]
+            self.len_unique_value = {}
+            for col in list(set(self.ordinal_features + self.LSTM_date_features)):
+                self.len_unique_value[col] = len(data[col].unique())
+
             X_val, Y_val, folds = self.create_validation(dataset_val)
             X_test, Y_test = X_val, Y_val
 
-        return column_text, X_train, Y_train, X_val, Y_val, X_test, Y_test, folds
+        if self.normalize:
+            if not isinstance(X_train, list):
+                X_train = self.fit_transform_normalize_data(X_train)
+                X_val = self.transform_normalize_data(X_val)
+                X_test = self.transform_normalize_data(X_test)
+            else:
+                for i in range(len(X_train)):
+                    x_tr = self.fit_transform_normalize_data(X_train[i][0])
+                    x_val = self.transform_normalize_data(X_train[i][1])
+                    X_train[i] = [x_tr, x_val]
+                if X_test is not None:
+                    X_test = self.transform_normalize_data(X_test)
+        else:
+            self.scaler_info = None
+
+        return column_text, X_train, Y_train, X_val, Y_val, X_test, Y_test, folds, position_id_train, position_id_test
+
+    def get_test_datasets(self, data_test):
+
+        data, Y, column_text = self.separate_X_Y(data_test)
+
+        if self.normalize:
+            data = self.transform_normalize_data(data)
+        else:
+            self.scaler_info = None
+        return data, Y, column_text

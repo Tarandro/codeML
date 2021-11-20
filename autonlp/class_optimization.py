@@ -38,12 +38,21 @@ def get_score_optimization(y, y_pred, shape_y, objective, scoring, average_scori
         else:
             if x_val is None:
                 # cross_validation
-                y_true = y.iloc[:, i].copy()
+                if isinstance(y, pd.DataFrame):
+                    y_true = y.iloc[:, i].copy()
+                else:
+                    y_true = y[:, i].copy()
             else:
                 # validation
-                y_true = y_val.iloc[:, i].copy()
+                if isinstance(y_val, pd.DataFrame):
+                    y_true = y_val.iloc[:, i].copy()
+                else:
+                    y_true = y_val[:, i].copy()
             # subset, only use data where fold_id >= 0 :
-            y_true_sample = y_true.values[np.where(fold_id >= 0)[0]]
+            if isinstance(y_true, pd.DataFrame):
+                y_true_sample = y_true.values[np.where(fold_id >= 0)[0]]
+            else:
+                y_true_sample = y_true[np.where(fold_id >= 0)[0]]
             prediction_sample = y_pred[:, i][np.where(fold_id >= 0)[0]]
         if 'regression' in objective:
             if 'explained_variance' == scoring:
@@ -111,14 +120,25 @@ class Optimiz_hyperopt:
             score (float) result of metric on validation set
         """
 
-        self.Model.initialize_params(self.y, params)
+        if isinstance(self.y, list):
+            self.Model.initialize_params(self.y[0][0], params)
+        else:
+            self.Model.initialize_params(self.y, params)
+
 
         start = time.perf_counter()
 
         if self.x_val is None:
             # cross-validation
-            fold_id = np.ones((len(self.y),)) * -1
-            oof_val = np.zeros((self.y.shape[0], self.y.shape[1]))
+            length_data = 0
+            for n, (tr, te) in enumerate(self.folds):
+                length_data += len(te)
+            if isinstance(self.y, list):
+                dim1_y = self.y[0][0].shape[1]
+            else:
+                dim1_y = self.y.shape[1]
+            fold_id = np.ones((length_data,)) * -1
+            oof_val = np.zeros((length_data, dim1_y))
         else:
             # validation
             fold_id = np.ones((len(self.y_val),)) * -1
@@ -126,6 +146,8 @@ class Optimiz_hyperopt:
 
         all_scores_train = []
         total_epochs = 0
+
+        y_all = oof_val.copy()
 
         for n, (tr, te) in enumerate(self.folds):
 
@@ -139,25 +161,20 @@ class Optimiz_hyperopt:
                     y_tr, y_val = self.y.values, self.y_val.values
                 else:
                     y_tr, y_val = self.y, self.y_val
+                y_all = y_val
             else:
+
+                x_tr = self.x[n][0]
+                x_val = self.x[n][1]
+                y_tr = self.y[n][0]
+                y_val = self.y[n][1]
+
                 # cross-validation
-                if isinstance(self.x, pd.DataFrame):
-                    x_tr, x_val = self.x.values[tr], self.x.values[te]
-                elif isinstance(self.x, dict):
-                    x_tr, x_val = {}, {}
-                    for col in self.x.keys():
-                        x_tr[col], x_val[col] = self.x[col][tr], self.x[col][te]
-                elif isinstance(self.x, list):
-                    x_tr, x_val = [], []
-                    for col in range(len(self.x)):
-                        x_tr.append(self.x[col][tr])
-                        x_val.append(self.x[col][te])
-                else:
-                    x_tr, x_val = self.x[tr], self.x[te]
+                if isinstance(x_tr, pd.DataFrame):
+                    x_tr, x_val = x_tr.values, x_val.values
                 if isinstance(self.y, pd.DataFrame):
-                    y_tr, y_val = self.y.values[tr], self.y.values[te]
-                else:
-                    y_tr, y_val = self.y[tr], self.y[te]
+                    y_tr, y_val = y_tr.values, y_val.values
+                y_all[te,:] = y_val
 
             model = self.Model.model()
 
@@ -234,7 +251,7 @@ class Optimiz_hyperopt:
                 del model, history
                 d = gc.collect()
 
-        score = get_score_optimization(self.y, oof_val, self.Model.shape_y, self.Model.objective,
+        score = get_score_optimization(y_all, oof_val, self.Model.shape_y, self.Model.objective,
                                        self.scoring, self.Model.average_scoring, train_set=False,
                                        fold_id=fold_id, x_val=self.x_val, y_val=self.y_val)
         logger.info('oof_val score {} Metric {}'.format(self.scoring, score))

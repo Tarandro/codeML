@@ -1,17 +1,11 @@
 import json
 import pickle
-from sklearn.pipeline import Pipeline
-import tensorflow as tf
-from tensorflow.keras.layers import Dense
-from transformers import AdamWeightDecay
-from spacy.lang.fr.stop_words import STOP_WORDS as fr_stop
-from spacy.lang.en.stop_words import STOP_WORDS as en_stop
 from ...class_optimization import *
 from ...validation import *
 from ...prediction import *
 
 import logging
-from ...utils.logging import get_logger
+from ...utils.logging import get_logger, verbosity_to_loglevel
 
 logger = get_logger(__name__)
 
@@ -27,29 +21,25 @@ class Model:
             - prediction on test set for each fold of a model : function : prediction()
     """
 
-    def __init__(self, flags_parameters, embedding, name_model_full, column_text, class_weight=None):
+    def __init__(self, flags_parameters, name_model_full, class_weight=None, len_unique_value={},
+                 time_series_features=None, scaler_info=None, position_id_train=None, position_id_val=None):
         """
         Args:
             flags_parameters : Instance of Flags class object
             embedding (:class: Base_Embedding) : A children class from Base_Embedding
             column_text (int) : column number with texts
-            name_model_full (str) : full name of model (embedding+classifier+tag)
+            name_model_full (str) : full name of model (embedding+classifier_nlp+tag)
             class_weight (None or 'balanced')
 
         From flags_parameters:
-            objective (str) : 'binary' or 'multi-class' or 'regression'
-            average_scoring (str) : 'micro', 'macro' or 'weighted'
-            seed (int)
-            apply_mlflow (Boolean) save model in self.path_mlflow (str) directory
-            experiment_name (str) name of the experiment, only if MLflow is activated
-            apply_logs (Boolean) use manual logs
-            apply_app (Boolean) if you want to use a model from model_deployment directory
+        objective (str) : 'binary' or 'multi-class' or 'regression'
+        average_scoring (str) : 'micro', 'macro' or 'weighted'
+        seed (int)
+        apply_mlflow (Boolean)
+        experiment_name (str)
         """
         self.flags_parameters = flags_parameters
 
-        self.embedding = embedding(flags_parameters, column_text, self.dimension_embedding)
-
-        self.column_text = column_text
         self.objective = flags_parameters.objective
         self.average_scoring = flags_parameters.average_scoring
         self.apply_mlflow = flags_parameters.apply_mlflow
@@ -58,12 +48,22 @@ class Model:
         self.apply_logs = flags_parameters.apply_logs
         self.apply_app = flags_parameters.apply_app
         self.seed = flags_parameters.seed
+        self.ordinal_features = flags_parameters.ordinal_features
+        self.size_train_prc = flags_parameters.size_train_prc
+        self.time_series_recursive = flags_parameters.time_series_recursive
+        self.LSTM_date_features = flags_parameters.LSTM_date_features
         self.name_model = None
         self.name_model_full = name_model_full
         self.class_weight = class_weight
         self.best_cv_score = 0.0
         self.df_all_results = pd.DataFrame()
         self.info_scores = {}
+        self.apply_autonlp = False
+        self.len_unique_value = len_unique_value
+        self.time_series_features = time_series_features
+        self.scaler_info = scaler_info
+        self.position_id_train = position_id_train
+        self.position_id_val = position_id_val
 
         if self.apply_mlflow:
             import mlflow
@@ -73,7 +73,7 @@ class Model:
     def hyper_params(self, size_params='small'):
         """ Abstract method.
 
-            Instantiate hyperparameters range for embedding method and classifier model that will be use for
+            Instantiate hyperparameters range for embedding method and classifier_nlp model that will be use for
             hyperopt optimization
 
         Args:
@@ -84,166 +84,58 @@ class Model:
         pass
 
     def initialize_params(self, y, params):
-        """ Initialize params to self.p / number of columns of y to self.y_shape /
+        """ Abstract method.
+
+            Initialize params to self.p / number of columns of y to self.y_shape /
             get number of classes (1 for regression)
 
         Args:
             y (Dataframe)
             params (dict) a hyperopt range for each hyperparameters
         """
-        self.shape_y = y.shape[1]
-
-        if self.shape_y == 1:
-            if 'regression' in self.objective:
-                self.nb_classes = 1
-            else:
-                self.nb_classes = len(np.unique(y))
-        else:
-            self.nb_classes = self.shape_y
-
-        self.p = params
-
-        if self.flags_parameters.language_text == 'fr':
-            stopwords = list(fr_stop)
-        else:
-            stopwords = list(en_stop)
-        # list of stop_words need to be boolean
-        if 'vect__tf__stop_words' in self.p.keys() and self.p['vect__tf__stop_words']:
-            self.p['vect__tf__stop_words'] = stopwords
-        if 'vect__tfidf__stop_words' in self.p.keys() and self.p['vect__tfidf__stop_words']:
-            self.p['vect__tfidf__stop_words'] = stopwords
+        pass
 
     def save_params(self, outdir_model):
-        """ Save all params as a json file needed to reuse the model
+        """ Abstract method.
+
+            Save all params as a json file needed to reuse the model
             + tensorflow tokenizer (pickle file) in outdir_model
+
         Args:
             outdir_model (str)
         """
-        params_all = dict()
-        p_model = self.p.copy()
-        # list of stop_words is transformed in boolean
-        if 'vect__tf__stop_words' in p_model.keys() and p_model['vect__tf__stop_words'] is not None:
-            p_model['vect__tf__stop_words'] = True
-        if 'vect__tfidf__stop_words' in p_model.keys() and p_model['vect__tfidf__stop_words'] is not None:
-            p_model['vect__tfidf__stop_words'] = True
-        params_all['p_model'] = p_model
-        params_all['language_text'] = self.flags_parameters.language_text
-        params_all['name_classifier'] = self.name_classifier
-
-        params_all['nb_classes'] = self.nb_classes
-        params_all['shape_y'] = self.shape_y
-
-        params_embedding = self.embedding.save_params(outdir_model)
-        params_all.update(params_embedding)
-
-        self.params_all = {self.name_model_full: params_all}
-
-        if self.apply_logs:
-            with open(os.path.join(outdir_model, "parameters.json"), "w") as outfile:
-                json.dump(self.params_all, outfile)
+        pass
 
     def load_params(self, params_all, outdir):
-        """ Initialize all params from params_all
+        """ Abstract method.
+
+            Initialize all params from params_all
             + tensorflow tokenizer (pickle file) from outdir path
 
         Args:
             params_all (dict)
             outdir (str)
         """
-        if params_all['language_text'] == 'fr':
-            stopwords = list(fr_stop)
-        else:
-            stopwords = list(en_stop)
-        p_model = params_all['p_model']
-        # list of stop_words need to be boolean
-        if 'vect__tf__stop_words' in p_model.keys() and p_model['vect__tf__stop_words']:
-            p_model['vect__tf__stop_words'] = stopwords
-        if 'vect__tfidf__stop_words' in p_model.keys() and p_model['vect__tfidf__stop_words']:
-            p_model['vect__tfidf__stop_words'] = stopwords
+        pass
 
-        self.p = p_model
-
-        self.nb_classes = params_all['nb_classes']
-        self.shape_y = params_all['shape_y']
-
-        self.embedding.load_params(params_all, outdir)
-
-    def model_classif(self, **kwargs):
+    def model(self, **kwargs):
         """ Abstract method.
 
-            Initialize model architecture according to classifier model
+            Initialize model architecture according to embedding method and classifier_nlp model
         Return:
             model (tensorflow Model or sklearn Pipeline)
         """
         pass
 
-    def model(self):
-        """ Abstract method.
-
-            Initialize model architecture according to embedding method and classifier model
-        Return:
-            model (tensorflow Model or sklearn Pipeline)
-        """
-
-        # model building is not the same between sklearn and Neural Network (NN) models
-        if not self.is_NN:
-
-            clf = self.model_classif()
-
-            if self.embedding.name_model in ['tf', 'tf-idf']:
-                vect = self.embedding.model()
-                pipeline = Pipeline(steps=[('vect', vect), ('clf', clf)])
-                pipeline.set_params(**self.p)
-
-            else:
-                pipeline = Pipeline(steps=[('clf', clf)])
-                pipeline.set_params(**self.p)
-            return pipeline
-        else:
-            x, inp = self.embedding.model()
-
-            x = self.model_classif(x)
-
-            if 'binary' in self.objective:
-                out = Dense(1, 'sigmoid')(x)
-            elif 'regression' in self.objective:
-                out = Dense(self.nb_classes, 'linear')(x)
-            else:
-                if self.shape_y == 1:
-                    out = Dense(self.nb_classes, activation="softmax")(x)
-                else:
-                    out = Dense(self.nb_classes, activation="sigmoid")(x)
-
-            model = tf.keras.models.Model(inputs=inp, outputs=out)
-
-            if self.embedding.name_model == "transformer":
-                optimizer = AdamWeightDecay(learning_rate=self.p['learning_rate'])
-            else:
-                optimizer = tf.keras.optimizers.Adam(learning_rate=self.p['learning_rate'])
-
-            if 'binary' in self.objective:
-                model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
-            elif 'regression' in self.objective:
-                model.compile(loss='mean_squared_error', optimizer=optimizer, metrics=['mean_squared_error'])
-            else:
-                if self.shape_y == 1:
-                    model.compile(loss='sparse_categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
-                else:
-                    model.compile(loss=tf.keras.losses.BinaryCrossentropy(), optimizer=optimizer,
-                                  metrics=['binary_crossentropy'])
-            return model
-
     def fit_optimization(self, x, y, folds, x_val=None, y_val=None):
         """ Apply Hyperopt optimization for the model by optimizing 'scoring' with a time less than time_limit_per_model
-            or number of try less than max_trials
-            Save and load optimization : Use trials object for the model saved in hyperopt directory
+            Use trials object for the model saved in hyperopt directory
             (use class_optimization.py)
         Args:
             x (List or dict or DataFrame)
             y (DataFrame)
             x_val (List or dict or DataFrame)
             y_val (DataFrame)
-            folds (List[tuple]) list with tuple (train_index, val_index)
         """
 
         # Look for a saved trials object in hyperopt directory :
@@ -271,7 +163,9 @@ class Model:
                     print(trials.best_trial)
                 if trials_step != -1:
                     logger.info(
-                        "Rerunning from {} trials to {} (+{}) trials".format(len(trials.trials), len(trials.trials) + trials_step, trials_step))
+                        "Rerunning from {} trials to {} (+{}) trials".format(len(trials.trials),
+                                                                             len(trials.trials) + trials_step,
+                                                                             trials_step))
                 else:
                     logger.info("Rerunning from {} trials ".format(len(trials.trials)))
             else:
@@ -319,12 +213,12 @@ class Model:
               y_train (Dataframe)
               x_val (List or dict or DataFrame)
               y_val (Dataframe)
-              folds (List[tuple]) list with tuple (train_index, val_index)
         """
 
-        val = Validation(self.objective, self.seed, self.is_NN, self.embedding.name_model, self.name_model_full,
+        val = Validation(self.objective, self.seed, self.is_NN, self.name_classifier, self.name_model_full,
                          self.class_weight, self.average_scoring, self.apply_mlflow, self.experiment_name,
-                         self.apply_logs)
+                         self.apply_logs, self.apply_autonlp, self.size_train, self.time_series_recursive,
+                         self.time_series_features, self.scaler_info)
         if self.flags_parameters.path_data_validation != 'empty':
             val.fit(model, x_train, y_train, folds, x_val, y_val, self.flags_parameters.cv_strategy,
                     self.flags_parameters.scoring, self.flags_parameters.outdir, self.params_all,
@@ -340,6 +234,14 @@ class Model:
         # store information from validation in self.info_scores :
         self.info_scores['fold_id'], self.info_scores['oof_val'] = val.get_cv_prediction()
 
+        if self.name_classifier == 'LSTM':
+            if self.index_pivot_fit != []:
+                index_pivot = self.index_pivot_fit.copy()
+                # size_train = int(y_train.shape[0] * 0.8)
+                # for i in range((y_train.shape[0] - size_train) - len(self.index_pivot_fit)):
+                #    index_pivot.remove(i)
+                self.info_scores['oof_val'] = self.info_scores['oof_val'].reshape(-1)[index_pivot]
+
         if 'binary' in self.objective:
             self.info_scores['accuracy_train'], self.info_scores['f1_train'], self.info_scores['recall_train'], \
             self.info_scores['precision_train'], self.info_scores['roc_auc_train'] = val.get_train_scores()
@@ -347,7 +249,8 @@ class Model:
             self.info_scores['precision_val'], self.info_scores['roc_auc_val'] = val.get_scores()
             self.info_scores['fpr'], self.info_scores['tpr'] = val.get_roc()
         elif 'multi-class' in self.objective:
-            self.info_scores['accuracy_train'], self.info_scores['f1_' + self.average_scoring + '_train'], self.info_scores[
+            self.info_scores['accuracy_train'], self.info_scores['f1_' + self.average_scoring + '_train'], \
+            self.info_scores[
                 'recall_' + self.average_scoring + '_train'], self.info_scores[
                 'precision_' + self.average_scoring + '_train'] = val.get_train_scores()
             self.info_scores['accuracy_val'], self.info_scores['f1_' + self.average_scoring + '_val'], self.info_scores[
@@ -360,7 +263,7 @@ class Model:
             self.info_scores['r2_val'] = val.get_scores()
 
     def prediction(self, x_test_before_copy=None, y_test_before_copy=None, doc_spacy_data_test=[],
-                   name_logs='last_logs', loaded_models=None):
+                   name_logs='last_logs', loaded_models=None, position_id_test=None, x_train=None, y_train=None):
         """ Apply prediction for the model on (x_test,) or (x_test,y_test)
             Models are loaded from the outdir/name_logs/name_embedding/name_model_full directory
             Average all folds prediction of a name_model to get final prediction
@@ -370,7 +273,6 @@ class Model:
             y_test_before_copy (Dataframe)
             doc_spacy_data_test (List[spacy object])
             name_logs ('last_logs' or 'best_logs')
-            loaded_models (Sklearn or TF model) model already loaded
         """
 
         if x_test_before_copy is not None:
@@ -379,12 +281,7 @@ class Model:
         # get path of models :
         has_saved_model = False
         if self.apply_logs:
-            if self.embedding.name_model == "transformer":
-                outdir_model = os.path.join(self.flags_parameters.outdir, name_logs, self.embedding.name_model,
-                                            self.name_model_full)
-            else:
-                outdir_model = os.path.join(self.flags_parameters.outdir, name_logs, self.embedding.name_model,
-                                            self.name_model_full.split('+')[1])
+            outdir_model = os.path.join(self.flags_parameters.outdir, name_logs, self.name_classifier, self.name_model_full)
             # get path of model folds :
             try:
                 model_fold_paths = glob(outdir_model + '/fold*')
@@ -422,29 +319,47 @@ class Model:
             y_test = None
 
         if has_saved_model:
-            pred = Prediction(self.objective, self.embedding.name_model, self.name_model_full, self.flags_parameters.outdir,
-                              name_logs, self.is_NN, self.average_scoring, self.apply_mlflow, self.experiment_name,
-                              self.apply_logs, self.apply_app)
+            pred = Prediction(self.objective, self.name_classifier, self.name_model_full, self.flags_parameters.outdir,
+                              name_logs, self.is_NN, self.class_weight, self.apply_mlflow, self.experiment_name,
+                              self.apply_logs, self.apply_app, self.apply_autonlp, self.time_series_recursive,
+                              self.time_series_features, self.scaler_info)
 
             # preprocess text on x_test :
-            if self.embedding.name_model not in ['tf', 'tf-idf']:
-                x_test = self.embedding.preprocessing_transform(x_test)
+            #if self.embedding.name_model not in ['tf', 'tf-idf']:
+            #    x_test = self.embedding.preprocessing_transform(x_test)
+            #else:
+            #    x_test_preprocessed = self.embedding.preprocessing_transform(x_test, doc_spacy_data_test)
+            #    if isinstance(x_test_preprocessed, dict):
+            #        x_test = x_test_preprocessed
+            #    else:
+            #        x_test[x_test.columns[self.column_text]] = x_test_preprocessed
+            time_series_recursive = True
+            if 'time_series' in self.objective:
+                if self.name_classifier == 'LSTM':
+                    x_test, y_test = self.preprocessing_transform(x_test, y_test, position_id_test)
+                elif self.is_NN:
+                    x_test = self.preprocessing_transform(x_test)
+                    if time_series_recursive:
+                        x_train = self.preprocessing_transform(x_train)
+                info_ts = None
             else:
-                x_test_preprocessed = self.embedding.preprocessing_transform(x_test, doc_spacy_data_test)
-                if isinstance(x_test_preprocessed, dict):
-                    x_test = x_test_preprocessed
-                else:
-                    x_test[x_test.columns[self.column_text]] = x_test_preprocessed
+                if self.is_NN:
+                    x_test = self.preprocessing_transform(x_test)
+                info_ts = None
 
             # use label map if labels are not numerics
             if y_test is not None:
                 reverse_map_label = None
-                if self.flags_parameters.map_label != {}:
+                if y_test.shape[1] == 1 and self.flags_parameters.map_label != {}:
                     if y_test[y_test.columns[0]].iloc[0] in self.flags_parameters.map_label.keys():
                         y_test[y_test.columns[0]] = y_test[y_test.columns[0]].map(self.flags_parameters.map_label)
                         if y_test[y_test.columns[0]].isnull().sum() > 0:
                             logger.error("Unknown label name during map of test labels")
                     reverse_map_label = {v: k for k, v in self.flags_parameters.map_label.items()}
+                elif y_test.shape[1] > 1 and self.flags_parameters.map_label != {}:
+                    for i in range(y_test.shape[1]):
+                        if i in self.flags_parameters.map_label.keys() and y_test[y_test.columns[i]].iloc[0] in self.flags_parameters.map_label.keys():
+                            y_test[y_test.columns[i]] = y_test[y_test.columns[i]].map(self.flags_parameters.map_label)
 
             # Init model architecture : (need for tensorflow model because we only save model weights)
             if not (self.apply_app and loaded_models is not None):
@@ -452,10 +367,14 @@ class Model:
             else:
                 model = None
 
-            pred.fit(model, x_test, y_test, loaded_models)
+            pred.fit(model, x_test, y_test, loaded_models, x_train, y_train, position_id_test)
 
             # store information from prediction in self.info_scores :
             self.info_scores['prediction'] = pred.get_prediction()
+
+            if self.name_classifier == 'LSTM':
+                if self.index_pivot_pred != []:
+                    self.info_scores['prediction'] = self.info_scores['prediction'].reshape(-1)[self.index_pivot_pred]
 
             if y_test is not None:
                 if 'binary' in self.objective:
@@ -485,11 +404,10 @@ class Model:
                     self.info_scores['mse_test'], self.info_scores['rmse_test'], self.info_scores[
                         'explained_variance_test'], self.info_scores['r2_test'] = 0.0, 0.0, 0.0, 0.0
 
-    def autonlp(self, x_train_before, y_train=None, x_val_before=None, y_val=None,
-                apply_optimization=True, apply_validation=True, method_embedding={},
-                doc_spacy_data_train=[], doc_spacy_data_val=[], folds=None):
+    def automl(self, x_train_before, y_train=None, x_val_before=None, y_val=None,
+                apply_optimization=True, apply_validation=True, folds=None):
         """ Apply fit_optimization and validation on the best model from hyperopt optimization if apply_validation
-            is True else on model parameters from self.flags_parameters.path_models_parameters
+            is True else on model from self.flags_parameters.path_models_parameters
         Args:
             x_train_before (Dataframe)
             y_train (Dataframe)
@@ -497,10 +415,6 @@ class Model:
             y_val (Dataframe)
             apply_optimization (Boolean)
             apply_validation (Boolean)
-            method_embedding (str) name of embedding method or path of embedding weights
-            doc_spacy_data_train (List[spacy object])
-            doc_spacy_data_val (List[spacy object])
-            folds (List[tuple]) list with tuple (train_index, val_index)
         """
 
         x_train = x_train_before.copy()
@@ -508,8 +422,6 @@ class Model:
             x_val = x_val_before.copy()
         else:
             x_val = None
-
-        self.method_embedding = method_embedding
 
         # use a model from self.flags_parameters.path_models_parameters if do not want to apply Optimization
         if not apply_optimization:
@@ -519,7 +431,6 @@ class Model:
                     params_all = json.load(json_file)
                 params_all = params_all[self.name_model_full]
                 self.load_params(params_all, os.path.dirname(self.flags_parameters.path_models_parameters))  # dirname!
-                self.embedding.load_params(params_all, os.path.dirname(self.flags_parameters.path_models_parameters))
             except:
                 if self.apply_logs:
                     path_models_parameters = os.path.join(self.flags_parameters.outdir, "models_best_parameters.json")
@@ -530,11 +441,10 @@ class Model:
                     with open(path_models_parameters) as json_file:
                         params_all = json.load(json_file)
                     logger.info(
-                        "apply_optimization is False and models_parameters path isn't provided, use best model parameters from {}.".format(
+                        "apply_optimization is False and models_parameters path isn't provided, use best mdeol parameters from {}.".format(
                             path_models_parameters))
                     params_all = params_all[self.name_model_full]
-                    self.load_params(params_all, os.path.dirname(path_models_parameters))
-                    self.embedding.load_params(params_all, os.path.dirname(path_models_parameters))
+                    self.load_params(params_all, os.path.dirname(self.flags_parameters.path_models_parameters))
                 except:
                     logger.error(
                         "Did not find name model : {} in '{}', Random parameters from Parameters optimization are used".format(
@@ -542,24 +452,58 @@ class Model:
                     apply_optimization = True
 
         # preprocess text on x_train :
-        if self.embedding.name_model not in ['tf', 'tf-idf']:
-            x_train = self.embedding.preprocessing_fit_transform(x_train, self.flags_parameters.size_params,
-                                                                 self.method_embedding)
-            if x_val is not None:
-                x_val = self.embedding.preprocessing_transform(x_val)
-        else:
-            x_train_preprocessed = self.embedding.preprocessing_fit_transform(x_train, doc_spacy_data_train,
-                                                                              self.method_embedding)
-            if x_val is not None:
-                x_val_preprocessed = self.embedding.preprocessing_transform(x_val, doc_spacy_data_val)
-            if isinstance(x_train_preprocessed, dict):
-                x_train = x_train_preprocessed
-                if x_val is not None:
-                    x_val = x_val_preprocessed
+        #if self.embedding.name_model not in ['tf', 'tf-idf']:
+        #    x_train = self.embedding.preprocessing_fit_transform(x_train, self.flags_parameters.size_params,
+        #                                                         self.method_embedding)
+        #    if x_val is not None:
+        #        x_val = self.embedding.preprocessing_transform(x_val)
+        #else:
+        #    x_train_preprocessed = self.embedding.preprocessing_fit_transform(x_train, doc_spacy_data_train,
+        #                                                                      self.method_embedding)
+        #    if x_val is not None:
+        #        x_val_preprocessed = self.embedding.preprocessing_transform(x_val, doc_spacy_data_val)
+        #    if isinstance(x_train_preprocessed, dict):
+        #        x_train = x_train_preprocessed
+        #        if x_val is not None:
+        #            x_val = x_val_preprocessed
+        #    else:
+        #        x_train[x_train.columns[self.column_text]] = x_train_preprocessed
+        #        if x_val is not None:
+        #            x_val[x_val.columns[self.column_text]] = x_val_preprocessed
+
+        size_train_prc = self.size_train_prc
+        if self.is_NN:
+            if self.name_classifier == 'LSTM':
+                if isinstance(x_train, list):
+                    for i in range(len(x_train)):
+                        x_tr, y_tr = self.preprocessing_fit_transform(x_train[i][0], y_train[i][0], size_train_prc)
+                        x_v, y_v = self.preprocessing_transform(x_train[i][1], y_train[i][1])
+                        x_train[i] = [x_tr, x_v]
+                        y_train[i] = [y_tr, y_v]
+                else:
+                    x_train, y_train = self.preprocessing_fit_transform(x_train, y_train, size_train_prc)
+                if x_val_before is not None:
+                    x_val, y_val = self.preprocessing_transform(x_val, y_val)
+
+            #elif self.name_classifier == 'DenseNetwork':
             else:
-                x_train[x_train.columns[self.column_text]] = x_train_preprocessed
-                if x_val is not None:
-                    x_val[x_val.columns[self.column_text]] = x_val_preprocessed
+                if isinstance(x_train, list):
+                    for i in range(len(x_train)):
+                        x_tr = self.preprocessing_fit_transform(x_train[i][0])
+                        x_v = self.preprocessing_transform(x_train[i][1])
+                        x_train[i] = [x_tr, x_v]
+                else:
+                    x_train = self.preprocessing_fit_transform(x_train)
+                if x_val_before is not None:
+                    x_val = self.preprocessing_transform(x_val)
+
+        if 'time_series' in self.objective:
+            if self.name_classifier == 'LSTM':
+                self.size_train = self.size_y_train_preprocessed
+            else:
+                self.size_train = int(y_train.shape[0] * size_train_prc)
+        else:
+            self.size_train = None
 
         ###############
         # Optimization
@@ -570,16 +514,16 @@ class Model:
             self.fit_optimization(x_train, y_train, folds, x_val, y_val)
             logger.info('Time search : {}'.format(time.perf_counter() - start))
 
-            self.initialize_params(y_train, self.best_params)
+            if isinstance(y_train, list):
+                self.initialize_params(y_train[0][0], self.best_params)
+            else:
+                self.initialize_params(y_train, self.best_params)
 
         # save params in path : 'outdir/last_logs/name_embedding/name_model_full'
         if self.apply_logs:
-            outdir_embedding = os.path.join(self.flags_parameters.outdir, 'last_logs', self.embedding.name_model)
+            outdir_embedding = os.path.join(self.flags_parameters.outdir, 'last_logs', self.name_classifier)
             os.makedirs(outdir_embedding, exist_ok=True)
-            if self.embedding.name_model == "transformer":
-                outdir_model = os.path.join(outdir_embedding, self.name_model_full)
-            else:
-                outdir_model = os.path.join(outdir_embedding, self.name_model_full.split('+')[1])
+            outdir_model = os.path.join(outdir_embedding, self.name_model_full)
             os.makedirs(outdir_model, exist_ok=True)
             self.save_params(outdir_model)
         else:
@@ -589,12 +533,7 @@ class Model:
         # Validation
         ###############
         if apply_validation:
-            if self.flags_parameters.path_data_validation == "empty":
-                logger.info("\n- Training with no validation:")
-            elif self.flags_parameters.path_data_validation == "" or self.flags_parameters.path_data_validation is None:
-                logger.info("\n- Training & Cross-Validation:")
-            else:
-                logger.info("\n- Training & Validation:")
+            logger.info("\n- Cross-Validation:")
             start = time.perf_counter()
             self.validation(self.model, x_train, y_train, folds, x_val, y_val)
             logger.info('Time validation : {}'.format(time.perf_counter() - start))
@@ -618,7 +557,8 @@ class Model:
                 self.info_scores['recall_' + self.average_scoring + '_val'], \
                 self.info_scores['precision_' + self.average_scoring + '_val'] = 0.0, 0.0, 0.0, 0.0
             elif 'regression' in self.objective:
-                self.info_scores['mse_train'], self.info_scores['rmse_train'], self.info_scores['explained_variance_train'], \
+                self.info_scores['mse_train'], self.info_scores['rmse_train'], self.info_scores[
+                    'explained_variance_train'], \
                 self.info_scores['r2_train'] = 0.0, 0.0, 0.0, 0.0
                 self.info_scores['mse_val'], self.info_scores['rmse_val'], self.info_scores['explained_variance_val'], \
                 self.info_scores['r2_val'] = 0.0, 0.0, 0.0, 0.0
