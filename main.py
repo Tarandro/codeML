@@ -10,25 +10,25 @@ from autonlp.flags import Flags
 
 flags_dict_info = {
     "debug": False,  # for debug : use only 50 data rows for training
-    "path_data": "C:/Users/alexi/Documents/data/data.csv",
+    "path_data": "C:/Users/AlexisGassmann/Documents/code/achats_reactivation_small.csv",
     "path_data_validation": "",
     "apply_logs": True,
     "outdir": "./logs",
     "apply_mlflow": False,
-    "experiment_name": "AutoNLP_3",
+    "experiment_name": "AutoML",
     "seed": 15,
     "apply_app": False,
 
-    "target": ["target"]
+    "target": ["reactivation_HMU_12M"],
 }
 
 flags_dict_autonlp = {
-    "objective": 'regression',    # 'binary' or 'multi-class' or 'regression'
-    "classifier_ml": {'logistic_regression':None, 'randomforest': 1, 'lightgbm': None,
+    "objective": 'binary',    # 'binary' or 'multi-class' or 'regression'
+    "classifier_ml": {'logistic_regression':2, 'randomforest': 1, 'lightgbm': 3,
                                  'xgboost': None, 'catboost': None, 'dense_network': None, 'lstm': None},
     "max_run_time_per_model": 20,
     "frac_trainset": 0.8,
-    "scoring": 'mse',
+    "scoring": 'f1',
     "nfolds": 5,
     "nfolds_train": 5,
     "class_weight": False,
@@ -50,15 +50,42 @@ flags_dict_ml_preprocessing = {
 
     #"ordinal_features": ["item_id", "dept_id", "store_id", "cat_id", "state_id", "wday", "month",
     #                     "year", 'event_name_1', 'event_type_1', 'event_name_2', 'event_type_2'],
-    "columns_to_remove": [],
-    "normalize": True,
+    "columns_to_keep": ['tx_reactivite_12M_av_score',
+                         'cl_dis_min',
+                         'cl_age_client',
+                         'delai_inactivite',
+                         'flag_enf_p15ans',
+                         'cl_nb_tck_12M_av_HMU_CS',
+                         'moy_dt_entre_ticket',
+                         'NB_ENFANTS',
+                         'achat_adulte_12M_av_HMU_CS',
+                         'cl_CA_12M_av_HMU_CS',
+                         'nb_ticket',
+                         'rens_ADR',
+                         'corr_depense_time',
+                         'flag_enf_15ans_ou_m',
+                         'rens_ENF',
+                         'seg_multicanal_life',
+                         'mean_week_end_day',
+                         'cl_anc_first_ach_dda',
+                         'nb_produit_aband_6M_av_score',
+                         'cl_IDV_12M_av_HMU_CS',
+                         'eshop_dern_ticket1',
+                         'rens_MOB',
+                         'tx_ouverture_12M_av_score',
+                         'cl_anc_adh_fid_dda',
+                         'nb_panier_aband_6M_av_score',
+                         'achat_naiss_bebe_enf_12M_av_HMU_CS'],
+
+    "columns_to_remove": ["ID_SC_INDIV"],
+    "normalize": False,
     "method_scaling": 'MinMaxScaler',   # 'MinMaxScaler', 'RobustScaler', 'StandardScaler'
     "type_columns": None,
     "apply_preprocessing_mandatory": True,
-    "remove_categorical": True,
+    "remove_categorical": False,
 
-    "method_nan_categorical": 'ffill',
-    "method_nan_numeric": 'ffill',
+    "method_nan_categorical": 'mode',
+    "method_nan_numeric": 'mean',
     "subsample": 0.3,
     "feature_interaction": False,
     "feature_ratio": False,
@@ -102,7 +129,7 @@ flags_dict_nlp_preprocessing = {
 }
 
 flags_dict_display = {
-    "sort_leaderboard": 'mse'
+    "sort_leaderboard": 'f1'
 }
 
 flags = Flags().update(flags_dict_info)

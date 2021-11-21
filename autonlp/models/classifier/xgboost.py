@@ -71,7 +71,7 @@ class ML_XGBoost(Model):
         return parameters
 
     def initialize_params(self, y, params):
-        self.shape_y = y.shape[1]
+        self.shape_y = int(y.shape[1])
         if self.shape_y > 1:
             params = {'estimator__'+k: v for k, v in params.items()}
         self.p = params
@@ -80,7 +80,14 @@ class ML_XGBoost(Model):
         params_all = dict()
 
         p_model = self.p.copy()
-        params_all['p_model'] = p_model
+        params_all['p_model'] = {}
+        for k, p in p_model.items():
+            if isinstance(p, (np.int64, np.int32, np.int8)):
+                params_all['p_model'][k] = int(p)
+            elif isinstance(p, (np.float64, np.float32)):
+                params_all['p_model'][k] = float(p)
+            else:
+                params_all['p_model'][k] = p
         params_all['name_classifier'] = self.name_classifier
         params_all['shape_y'] = self.shape_y
 

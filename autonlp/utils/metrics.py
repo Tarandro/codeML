@@ -28,9 +28,18 @@ def calcul_metric_binary(y_true_, y_pred, thr_1=0.5, print_score=True):
 
     report = classification_report(y_true.reshape(-1), np.where(y_pred > thr_1, 1, 0).reshape(-1), digits = 4, output_dict = True)
     acc = np.round(report['accuracy'], 4)
-    f1 = np.round(report['1']['f1-score'], 4)
-    recall = np.round(report['1']['recall'], 4)
-    precision = np.round(report['1']['precision'], 4)
+
+    value_pos = '1'
+    if value_pos in report.keys():
+        pass
+    elif '1.0' in report.keys():
+        value_pos = '1.0'
+    else:
+        value_pos = list(report.keys())[0]
+
+    f1 = np.round(report[value_pos]['f1-score'], 4)
+    recall = np.round(report[value_pos]['recall'], 4)
+    precision = np.round(report[value_pos]['precision'], 4)
     # roc_auc = np.round(roc_auc_score(y_true.values, np.where(y_pred<0.5,0,1)),4)
     fp_rate, tp_rate, thresholds = roc_curve(y_true.reshape(-1), y_pred.reshape(-1))
     roc_auc = np.round(auc(fp_rate, tp_rate), 4)

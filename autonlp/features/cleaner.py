@@ -1,3 +1,4 @@
+import pandas as pd
 from spacy.cli import download
 from spacy import load
 from spacy.lang.fr.stop_words import STOP_WORDS as fr_stop
@@ -70,6 +71,7 @@ class Preprocessing:
         self.bin_numeric_features = flags_parameters.bin_numeric_features
         self.remove_low_variance = flags_parameters.remove_low_variance
         self.columns_to_remove = flags_parameters.columns_to_remove
+        self.columns_to_keep = flags_parameters.columns_to_keep
         self.info_pca = flags_parameters.info_pca
         self.info_tsne = flags_parameters.info_tsne
         self.info_stats = flags_parameters.info_stats
@@ -141,6 +143,8 @@ class Preprocessing:
 
     def preprocessing_mandatory(self, data):
 
+        data = data[[col for col in self.columns_to_keep if col in data.columns]]
+
         data = data.drop([col for col in self.columns_to_remove if col in data.columns], axis=1)
 
         ###### Ordinal Encoding
@@ -186,24 +190,62 @@ class Preprocessing:
                 self.apply_dummies = True
                 break
 
-        self.info_feat_categorical = {}
+        #self.info_feat_categorical = {}
+        base_features = list(data.columns)
         if self.apply_dummies:
             self.start_data = data.iloc[:100,:].copy()
             self.start_data.to_csv(os.path.join(self.outdir_pre, "start_data.csv"), index=False)
 
+            col_to_encode = []
+
             for col_categorical in self.type_columns['categorical']:
                 if col_categorical not in self.ordinal_features and col_categorical in data.columns:
-                    dummies = one_hot_encode(data[col_categorical])
-                    if dummies.shape[1] == 1:
-                        dummies.columns = [col_categorical + '_' + dummies.columns[0]]
-                    index_column = list(data.columns).index(col_categorical)
-                    order_columns = list(data.columns)[:index_column] + list(dummies.columns) + list(data.columns)[(index_column + 1):]
-                    data = pd.concat([dummies, data.drop([col_categorical], axis=1)], axis=1)
-                    data = data[order_columns]
-                    self.info_feat_categorical[col_categorical] = list(dummies.columns)
+                    col_to_encode.append(col_categorical)
+
+                    #dummies = one_hot_encode(data[col_categorical])
+                    #if dummies.shape[1] == 1:
+                    #    dummies.columns = [col_categorical + '_' + dummies.columns[0]]
+                    #index_column = list(data.columns).index(col_categorical)
+                    #order_columns = list(data.columns)[:index_column] + list(dummies.columns) + list(data.columns)[(index_column + 1):]
+                    #data = pd.concat([dummies, data.drop([col_categorical], axis=1)], axis=1)
+                    #data = data[order_columns]
+                    #self.info_feat_categorical[col_categorical] = list(dummies.columns)
+
+            self.base_columns = {}
+            if len(col_to_encode) > 0:
+                data = pd.get_dummies(data, columns=col_to_encode, drop_first=False, dummy_na=False)
+                self.base_columns["col"] = list(data.columns)
+            else:
+                self.base_columns["col"] = []
+
+            def find_map_col_dummies(features, X):
+                """ (La fonction pd.get_dummies a été appliquée sur X)
+                map les varaibles object dans features avec les colonnes dummies de 'X'
+                Args:
+                    features (list)
+                    X (DataFrame)
+                """
+                map_col_dummies = {}
+                list_col_X = list(X.columns)
+                for col in sorted(features, key=len, reverse=True):
+                    for col_x in list_col_X:
+                        if col_x[:len(col)] == col and col_x != col:
+                            map_col_dummies[col_x] = col
+                    list_col_X = [t for t in list(X.columns) if t not in map_col_dummies.values()]
+                return map_col_dummies
+
+            self.info_feat_categorical = find_map_col_dummies(base_features, data)
+
+            pickle.dump(self.base_columns,
+                        open(os.path.join(self.outdir_pre, "base_columns.pkl"), "wb"))
+            pickle.dump(self.info_feat_categorical,
+                        open(os.path.join(self.outdir_pre, "info_feat_categorical.pkl"), "wb"))
+
         return data
 
     def preprocessing_mandatory_transform(self, data_test):
+
+        data_test = data_test[[col for col in self.columns_to_keep if col in data_test.columns]]
 
         data_test = data_test.drop([col for col in self.columns_to_remove if col in data_test.columns], axis=1)
 
@@ -252,29 +294,47 @@ class Preprocessing:
         if self.apply_dummies:
             concat_data = pd.concat([self.start_data, data_test], axis=0, ignore_index=True)
 
+            col_to_encode = []
             for col_categorical in self.type_columns['categorical']:
                 if col_categorical not in self.ordinal_features and col_categorical in concat_data.columns:
-                    dummies = one_hot_encode(concat_data[col_categorical])
-                    dummies_parallel = one_hot_encode(self.start_data[col_categorical])
-                    if dummies.shape[1] == 1:
-                        dummies.columns = [col_categorical + '_' + dummies.columns[0]]
-                    if dummies_parallel.shape[1] == 1:
-                        dummies_parallel.columns = [col_categorical + '_' + dummies_parallel.columns[0]]
+                    col_to_encode.append(col_categorical)
+                    #dummies = one_hot_encode(concat_data[col_categorical])
+                    #dummies_parallel = one_hot_encode(self.start_data[col_categorical])
+                    #if dummies.shape[1] == 1:
+                    #    dummies.columns = [col_categorical + '_' + dummies.columns[0]]
+                    #if dummies_parallel.shape[1] == 1:
+                    #    dummies_parallel.columns = [col_categorical + '_' + dummies_parallel.columns[0]]
+                    #
+                    #for col in dummies.columns:
+                    #    if col not in dummies_parallel.columns:
+                    #        dummies = dummies.drop([col], axis=1)
+                    #
+                    #if len(dummies.columns) != len(dummies_parallel.columns):
+                    #    print('error in one_hot encoding categorical')
+                    #
+                    #index_column = list(concat_data.columns).index(col_categorical)
+                    #order_columns = list(concat_data.columns)[:index_column] + list(dummies.columns) + list(
+                    #    concat_data.columns)[(index_column + 1):]
+                    #concat_data = pd.concat([dummies, concat_data.drop([col_categorical], axis=1)], axis=1)
+                    #concat_data = concat_data[order_columns]
 
-                    for col in dummies.columns:
-                        if col not in dummies_parallel.columns:
-                            dummies = dummies.drop([col], axis=1)
+            #data_test = concat_data[len(self.start_data):].reset_index(drop=True)  # !!!
 
-                    if len(dummies.columns) != len(dummies_parallel.columns):
-                        print('error in one_hot encoding categorical')
+            if len(col_to_encode) > 0:
+                data_test = pd.get_dummies(data_test, columns=col_to_encode, drop_first=False, dummy_na=False)
+            else:
+                pass
 
-                    index_column = list(concat_data.columns).index(col_categorical)
-                    order_columns = list(concat_data.columns)[:index_column] + list(dummies.columns) + list(
-                        concat_data.columns)[(index_column + 1):]
-                    concat_data = pd.concat([dummies, concat_data.drop([col_categorical], axis=1)], axis=1)
-                    concat_data = concat_data[order_columns]
+            for col in self.base_columns["col"]:
+                if col not in data_test.columns:
+                    data_test[col] = 0
+                    logger.error('Error in one_hot encoding categorical : {} is not in test set (solution : col added with 0 values)'.format(col))
 
-            data_test = concat_data[len(self.start_data):].reset_index(drop=True)  # !!!
+            for col in data_test.columns:
+                if col not in self.base_columns["col"]:
+                    data_test = data_test.drop([col], axis=1)
+                    logger.error('Error in one_hot encoding categorical : {} was not in original train set, (solution : col removed)'.format(col))
+
         return data_test
 
     def build_feature_bin_numeric(self, data):
@@ -899,6 +959,14 @@ class Preprocessing:
             pass
         try:
             self.start_data = pd.read_csv(os.path.join(self.outdir_pre, "start_data.csv"))
+        except:
+            pass
+        try:
+            self.base_columns = pickle.load(open(os.path.join(self.outdir_pre, "base_columns.pkl"), "rb"))
+        except:
+            pass
+        try:
+            self.info_feat_categorical = pickle.load(open(os.path.join(self.outdir_pre, "info_feat_categorical.pkl"), "rb"))
         except:
             pass
         try:

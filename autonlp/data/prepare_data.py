@@ -237,8 +237,11 @@ class Prepare:
         else:
             self.scaler = StandardScaler(copy=False)
 
+        col_object = [col for col in X_train.columns if
+                       str(X_train[col].dtypes) in ['O', 'object', 'category', 'bool']]
+
         self.column_to_normalize = [col for col in self.features if
-                                    col not in self.ordinal_features + [self.column_text]]  # from pre because int
+                                    col not in self.ordinal_features + [self.column_text] + col_object]  # from pre because int
 
         if len(self.column_to_normalize) > 0:
             self.scaler.fit(X_train[self.column_to_normalize])
@@ -276,8 +279,11 @@ class Prepare:
     def transform_normalize_data(self, X):
         self.features = X.columns.values
 
+        col_object = [col for col in X.columns if
+                      str(X[col].dtypes) in ['O', 'object', 'category', 'bool']]
+
         self.column_to_normalize = [col for col in self.features if
-                                    col not in self.ordinal_features + [self.column_text]]  # from pre because int
+                                    col not in self.ordinal_features + [self.column_text] + col_object]  # from pre because int
 
         if len(self.column_to_normalize) > 0:
             try:

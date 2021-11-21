@@ -51,7 +51,7 @@ def remove_outliers(data, real):
 
 def one_hot_encode(data):
     """Perform a one-hot encoding and return only n-1 columns (avoid multicorrelation) """
-    return pd.get_dummies(data).iloc[:, :-1]
+    return pd.get_dummies(data) #.iloc[:, :-1]
 
 
 def ordinal_encoding(data):
